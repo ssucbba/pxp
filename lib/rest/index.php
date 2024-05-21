@@ -7,13 +7,14 @@
  *
  * If you are using Composer, you can skip this step.
  */
-
 include_once(dirname(__FILE__)."/../../../lib/lib_control/CTSesion.php");
 session_start();
 include_once(dirname(__FILE__).'/../../../lib/DatosGenerales.php');
 include_once(dirname(__FILE__).'/../../../lib/lib_general/Errores.php');
 include_once(dirname(__FILE__).'/../../../lib/lib_control/CTincludes.php');
 
+
+include_once(dirname(__FILE__).'/PxpRestClient2.php'); //rac 2022
 
 $_SESSION["_OFUSCAR_ID"]='no';
 //estable aprametros ce la cookie de sesion
@@ -24,13 +25,8 @@ if($_SESSION["_FORSSL"]=='SI'){
 else{
     session_set_cookie_params (0,$_SESSION["_FOLDER"], '' ,false ,false);
 }
-
-
 require 'Slim/Slim.php';
-
-
 \Slim\Slim::registerAutoloader();
-
 /**
  * Step 2: Instantiate a Slim application
  *
@@ -40,28 +36,23 @@ require 'Slim/Slim.php';
  * of setting names and values into the application constructor.
  */
 $app = new \Slim\Slim(array(
-
     'log.enabled' => false,
     'debug' => false
 ));
 register_shutdown_function('fatalErrorShutdownHandler');
 set_exception_handler('exception_handler');
 set_error_handler('error_handler');
-
 //$app->error('exception_handler');
 $app->log->setEnabled(false);
 //error_reporting(~E_NOTICE);
 $app->response->headers->set('Content-Type', 'application/json');
 $headers = $app->request->headers;
-
 header('Access-Control-Allow-Origin: ' . $headers['Origin']);
 header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
-header('Access-Control-Allow-Headers: pxp-user, content-type, Php-Auth-User, Php-Auth-Pw');
+header('Access-Control-Allow-Headers: pxp-user, content-type, Php-Auth-User, Php-Auth-Pw, auth-version');
 header('Access-Control-Allow-Credentials: true');
 header('Access-Control-Max-Age: 1728000');
-
 // get route
-
 /**
  * Step 3: Define the Slim application routes
  *
@@ -79,6 +70,17 @@ $app->get(
     }
 );
 
+$app->get(
+    '/encriptar/:user/:password',
+    function ($user, $password) {
+        $cliente = new PxpRestClient2('locahost','',   80,  'HTTP');
+        $prefix = uniqid('pxp');
+        $_pass = md5($password);
+        $_user = $cliente->encrypt($prefix . '$$' . $user, $_pass);
+        echo $_user ;
+    }
+);
+
 
 function get_func_argNames($funcName) {
     $f = new ReflectionFunction($funcName);
@@ -93,8 +95,9 @@ function authPxp($headersArray) {
 
     $_SESSION["_SESION"]= new CTSesion();
     $_SESSION["_tipo_aute"] = 'REST';
-
     $mensaje = '';
+
+
     //listar usuario con Pxp-User del header
     $objParam = new CTParametro('',null,null,'../../sis_seguridad/control/Usuario/listarUsuario');
     $objParam->addParametro('usuario', $headersArray['Pxp-User']);
@@ -114,32 +117,35 @@ function authPxp($headersArray) {
     //creamos array de request
     $reqArray = array();
 
-    if (!extension_loaded('mcrypt') && !isset($headersArray['pxp-auth-version'])) {
+    if (!extension_loaded('mcrypt') && !isset($headersArray['auth-version'])) {
         if ($mensaje == '')
             $mensaje = 'El modulo mcrypt no esta instalado en el servidor. No es posible utilizar REST en este momento';
     }
     if ($headersArray['Pxp-User'] == $headersArray['Php-Auth-User']) {
-        if (!isset($headersArray['pxp-auth-version'])) {
+        if (!isset($headersArray['auth-version'])) {
             $auxArray = explode('$$', fnDecrypt($headersArray['Php-Auth-Pw'], $md5Pass));
         } else {
-            $auxArray = explode('$$', opensslDecrypt($headersArray['Pxp-Auth-User'], $md5Pass));
+            $auxArray = explode('$$', opensslDecrypt($headersArray['Php-Auth-User'], $md5Pass));
         }
         $headers = false;
     } else {
         //desencriptar usuario y contrasena
-        if (!isset($headersArray['pxp-auth-version'])) {
+
+        if (!isset($headersArray['auth-version'])) {
             $auxArray = explode('$$', fnDecrypt($headersArray['Php-Auth-User'], $md5Pass));
         } else {
-            $auxArray = explode('$$', opensslDecrypt($headersArray['Pxp-Auth-User'], $md5Pass));
+            $auxArray = explode('$$', opensslDecrypt($headersArray['Php-Auth-User'], $md5Pass));
         }
         $headers = true;
     }
+
 
     if (count($auxArray) == 2 && ($auxArray[1] == $headersArray['Pxp-User'] || $auxArray[1] == $md5Pass)) {
 
         $reqArray['usuario'] = $headersArray['Pxp-User'];
         $reqArray['contrasena'] =  $md5Pass;
         $reqArray['_tipo'] = 'restAuten';
+
 
 
         //autentificar usuario en sistema
@@ -168,7 +174,6 @@ function authPxp($headersArray) {
     }
 
 }
-
 function fnDecrypt($sValue, $sSecretKey)
 {
     return rtrim(
@@ -187,21 +192,29 @@ function fnDecrypt($sValue, $sSecretKey)
         ), "\0"
     );
 }
+function opensslDecrypt($encrypted, $password) {
+    $json = json_decode(base64_decode($encrypted), true);
 
-function opensslDecrypt($ivCiphertext, $password) {
-    $method = "AES-256-CBC";
-    $decoded_ivCiphertext = base64_decode($ivCiphertext);
-    $iv = substr($decoded_ivCiphertext, 0, 16);
-    $ciphertext = substr($decoded_ivCiphertext, 16);
-    return openssl_decrypt($decoded_ivCiphertext, $method, $password, OPENSSL_RAW_DATA, $iv);
+    try {
+        $salt = hex2bin($json["salt"]);
+        $iv = hex2bin($json["iv"]);
+    } catch (Exception $e) {
+        return null;
+    }
+
+    $cipherText = base64_decode($json['ciphertext']);
+
+    $iterations = intval(abs($json['iterations']));
+    if ($iterations <= 0) {
+        $iterations = 999;
+    }
+    $hashKey = hash_pbkdf2('sha512', $password, $salt, $iterations, (256 / 4));
+    unset($iterations, $json, $salt);
+
+    $decrypted= openssl_decrypt($cipherText , 'AES-256-CBC', hex2bin($hashKey), OPENSSL_RAW_DATA, $iv);
+    unset($cipherText, $hashKey, $iv);
+    return $decrypted;
 }
-
-
-
-
-
-
-
 
 $app->get('/seguridad/Persona2/:start/:limit','persona2');
 
@@ -236,47 +249,20 @@ function persona2($r,$t){
 
 }
 
-
-
 $app->get(
     '/seguridad/Persona/:start/:limit',
     function () use ($app) {
-        //$start = $app->request->get('start');
-        // $limit = $app->request->get('limit');
+
 
         $par = list($start, $limit) = func_get_args();
 
-        // $ref = new ReflectionFunction();
-
-        //print_r($ref->getParameters());
-
-        //get_func_argNames('test')
-
-
-        //          foreach(func_get_args() as $k => $v){
-        //                echo $k . " => " . $v . "<BR/>";
-        //           }
-
-
-        //print_r($f);
-
-        //         $paramValue = $app->request->params('paramName');
-        //        print_r($paramValue);
-
-        //$req = $app->request();
-        //print_r($req);
 
         $request= $app->request();
 
         $s1 = $app->request()->params('start');
-        //list($start, $limit) = func_get_args();
+
 
         $data = json_decode($request->getBody()) ?: $request->params();
-
-
-        // print_r($data);
-        //$req = $app->request();
-        //print_r($req->params());
 
 
         //Instancia la clase dinamica para ejecutar la accion requerida
@@ -311,7 +297,6 @@ $app->get(
 
     }
 );
-
 $app->get(
 
     '/:sistema/:clase_control/:metodo',
@@ -325,7 +310,7 @@ $app->get(
         //var_dump($app->request->cookies);
         if ( isset($cookies['PHPSESSID']) && isset($_SESSION['_SESION']) && $_SESSION["_SESION"]->getEstado()=='activa') {
 
-        } else if (isset($headers['Php-Auth-User']) || isset($headers['Pxp-Auth-User'])) {
+        } else if (isset($headers['Php-Auth-User'])) {
             authPxp($headers);
         }else if (in_array($psudourl, $_SESSION['_REST_NO_CHECK'])) {
 
@@ -345,7 +330,7 @@ $app->get(
 
         //TODO validar cadenas vaias y retorna error en forma JSON
         $ruta_include = 'sis_'.$sistema.'/control/ACT'.$clase_control.'.php';
-        $ruta_url = 'sis_'+$sistema.'/control/'.$clase_control.'/'.$metodo;
+        $ruta_url = 'sis_'.$sistema.'/control/'.$clase_control.'/'.$metodo;
 
         //TODO verificar sesion
         //throw new Exception('La sesion ha sido duplicada',2);
@@ -386,10 +371,8 @@ $app->get(
         //arma $JSON
         $JSON = json_encode($aPostData);
 
-
         $objParam = new CTParametro($JSON,null,null,'../../'.$ruta_url);
         include_once dirname(__FILE__).'/../../../'.$ruta_include;
-
 
         //Instancia la clase dinamica para ejecutar la accion requerida
         eval('$cad = new ACT'.$clase_control.'($objParam);');
@@ -398,7 +381,6 @@ $app->get(
 
     }
 );
-
 $app->post(
 
     '/seguridad/Auten/verificarCredenciales',
@@ -407,7 +389,7 @@ $app->post(
         set_exception_handler('exception_handler');
         set_error_handler('error_handler');
         $headers = $app->request->headers;
-        if (isset($headers['Php-Auth-User']) ) {
+        if (isset($headers['Php-Auth-User'])) {
 
             authPxp($headers);
 
@@ -434,27 +416,23 @@ $app->post(
             $auxHeaders = array('Pxp-User'=>$app->request->post('usuario'),'Php-Auth-User'=>$app->request->post('usuario'),'Php-Auth-Pw'=>$app->request->post('contrasena'));
             authPxp($auxHeaders);
         }
-        echo "{success:true,
-				cont_alertas:".$_SESSION["_CONT_ALERTAS"].",
-				nombre_usuario:'".$_SESSION["_NOM_USUARIO"]."',
-				nombre_basedatos:'".$_SESSION["_BASE_DATOS"]."',
-				id_usuario:'".$_SESSION["_ID_USUARIO_OFUS"]."',
-				id_funcionario:'".$_SESSION["_ID_FUNCIOANRIO_OFUS"]."',
-				autentificacion:'".$_SESSION["_AUTENTIFICACION"]."',
-				estilo_vista:'".$_SESSION["_ESTILO_VISTA"]."',
-				mensaje_tec:'".$_SESSION["mensaje_tec"]."',
-				timeout:".$_SESSION["_TIMEOUT"]."}";
+        echo '{"success":true,
+                "cont_alertas":'.$_SESSION["_CONT_ALERTAS"].',
+                "nombre_usuario":"'.$_SESSION["_NOM_USUARIO"].'",
+                "nombre_basedatos":"'.$_SESSION["_BASE_DATOS"].'",
+                "id_usuario":"'.$_SESSION["_ID_USUARIO_OFUS"].'",
+                "id_funcionario":"'.$_SESSION["_ID_FUNCIOANRIO_OFUS"].'",
+                "autentificacion":"'.$_SESSION["_AUTENTIFICACION"].'",
+                "estilo_vista":"'.$_SESSION["_ESTILO_VISTA"].'",
+                "mensaje_tec":"'.$_SESSION["mensaje_tec"].'",
+                "timeout":'.$_SESSION["_TIMEOUT"].'}';
         exit;
     }
 );
-
-
-
 $app->post(
 
     '/:sistema/:clase_control/:metodo',
     function ($sistema,$clase_control,$metodo) use ($app) {
-
         $headers = $app->request->headers;
         $cookies = $app->request->cookies;
         $psudourl = '/'.$sistema.'/'.$clase_control.'/'.$metodo;
@@ -462,12 +440,12 @@ $app->post(
 
         if ( isset($cookies['PHPSESSID']) && isset($_SESSION['_SESION']) && $_SESSION["_SESION"]->getEstado()=='activa') {
 
-        } else if (isset($headers['Php-Auth-User']) || isset($headers['Pxp-Auth-User'])) {
+        } else if (isset($headers['Php-Auth-User'])) {
+
             authPxp($headers);
         }else if (in_array($psudourl, $_SESSION['_REST_NO_CHECK'])) {
 
         } else {
-            var_dump($headers);
             $men=new Mensaje();
             $men->setMensaje('ERROR','pxp/lib/rest/index.php Linea: 432','No hay una sesion activa para realizar esta peticion',
                 'Codigo de error: SESION',
@@ -485,7 +463,6 @@ $app->post(
         $ruta_include = 'sis_'.$sistema.'/control/ACT'.$clase_control.'.php';
 
         $ruta_url = 'sis_'. $sistema.'/control/'.$clase_control.'/'.$metodo;
-
 
         //TODO verificar sesion
         //throw new Exception('La sesion ha sido duplicada',2);
@@ -509,11 +486,8 @@ $app->post(
         //arma $JSON
         $JSON = json_encode($aPostData);
 
-
         $objParam = new CTParametro($JSON,$m,$aPostFiles,'../../'.$ruta_url);
         include_once dirname(__FILE__).'/../../../'.$ruta_include;
-
-
         //Instancia la clase dinamica para ejecutar la accion requerida
         eval('$cad = new ACT'.$clase_control.'($objParam);');
 
@@ -521,20 +495,12 @@ $app->post(
 
     }
 );
-
-
-
-
-
 $app->get('/books/:id/:op/',
-
     function ($op,$id) {
         //Show book identified by $id
         echo 'Hola '.$id .' , .. '.$op;
     }
 );
-
-
 // POST route
 $app->post(
     '/post',
@@ -542,7 +508,6 @@ $app->post(
         echo 'This is a POST route';
     }
 );
-
 // POST route
 $app->get(
     '/get',
@@ -550,7 +515,6 @@ $app->get(
         echo 'This is a GET route';
     }
 );
-
 // PUT route
 $app->put(
     '/put',
@@ -558,12 +522,10 @@ $app->put(
         echo 'This is a PUT route';
     }
 );
-
 // PATCH route
 $app->patch('/patch', function () {
     echo 'This is a PATCH route';
 });
-
 // DELETE route
 $app->delete(
     '/delete',
@@ -577,7 +539,7 @@ $app->options('/:sistema/:clase_control/:metodo', function ($sistema,$clase_cont
 
     header('Access-Control-Allow-Origin: ' . $headers['Origin']);
     header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
-    header('Access-Control-Allow-Headers: pxp-user, content-type, Php-Auth-User, Php-Auth-Pw');
+    header('Access-Control-Allow-Headers: Pxp-user, content-type, Php-Auth-User, Php-Auth-Pw, auth-version');
     header('Access-Control-Allow-Credentials: true');
     header('Access-Control-Max-Age: 1728000');
 
