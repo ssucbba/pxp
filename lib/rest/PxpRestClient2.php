@@ -53,20 +53,19 @@ class PxpRestClient2
     }
     
     public function setCredentialsPxp($user, $pass)
-    {
-    	
-    	
-		
+    {  			
     	$prefix = uniqid('pxp');
     	$this->_pxp = true;
-		$this->_pass = md5($pass);
-		$this->_user = $this->encrypt($prefix . '$$' . $user, $this->_pass);		
-        $this->_user = base64_encode($this->_user);
+	$this->_pass = md5($pass);
+	$this->_user = $this->encrypt($prefix . '$$' . $user, $this->_pass);		
+        
+	//$this->_user = base64_encode($this->_user);
 		
-		$this->addHeader("Pxp-user: $user");
-		$this->addHeader("Pxp-Auth-User:". $this->_user);
+	$this->addHeader("Pxp-user: $user");
+	
+	$this->addHeader("Php-Auth-User:". $this->_user);
 				
-		$this->addHeader("pxp-auth-version: 2");
+	$this->addHeader("auth-version: 2");
         $this->_pass = $this->encrypt($prefix . '$$' . $this->_pass, $this->_pass);
 		
         return $this;
@@ -79,13 +78,32 @@ class PxpRestClient2
         return $this;
     }
 	
-	function encrypt($plaintext, $password) {
+	/*function encrypt($plaintext, $password) {
 	    $method = "AES-256-CBC";	    
 	    $iv = openssl_random_pseudo_bytes(16);	
 		
 	    $ciphertext = openssl_encrypt($plaintext, $method, $password, OPENSSL_RAW_DATA, $iv); 
 	    return $iv . $ciphertext;
-	}
+	}*/
+	function encrypt($plaintext, $password) {
+        	$ivLength = openssl_cipher_iv_length('AES-256-CBC');
+
+	        $iv = openssl_random_pseudo_bytes($ivLength);
+
+	        $salt = openssl_random_pseudo_bytes(256);
+        	$iterations = 999;
+	        $hashKey = hash_pbkdf2('sha512', $password, $salt, $iterations, (256 / 4));
+
+        	$encryptedString = openssl_encrypt($plaintext, 'AES-256-CBC', hex2bin($hashKey), OPENSSL_RAW_DATA, $iv);
+
+	        $encryptedString = base64_encode($encryptedString);
+	        unset($hashKey);
+
+        	$output = ['ciphertext' => $encryptedString, 'iv' => bin2hex($iv), 'salt' => bin2hex($salt), 'iterations' => $iterations];
+	        unset($encryptedString, $iterations, $iv, $ivLength, $salt);
+
+        	return base64_encode(json_encode($output));
+    	}
 	
 	function decrypt($ivCiphertext, $password) {
 	    $method = "AES-256-CBC";

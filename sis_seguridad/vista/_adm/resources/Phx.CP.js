@@ -956,7 +956,7 @@ Phx.CP=function(){
 
             // ventana para el login
             win_login = new Ext.Window({
-                title: 'PXP',
+                title: 'MIDDLEWARE',
                 modal:true,
                 width:320,
                 height:180,
